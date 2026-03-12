@@ -47,7 +47,14 @@ const params = {
   textString: 'MALAI',
   textLayout: 1,           // 0=random, 1=sequential (repeating text)
   textMaskString: 'MALAI',
+  atlasFont: 'monospace',
+  maskFont: 'sans-serif',
   particlePreset: 'Default',
+  particleScale: 1.0,
+  particleAngle: 0.0,
+  layoutRandomMode: 'Auto',
+  highDetailedMode: false,
+  lowDetailedMode: false,
   spiralSpeed: 3.0,
   flowSpeedX: 0.15,
   flowSpeedY: 0.1,
@@ -115,6 +122,8 @@ const uniforms = {
   uGradColorC: { value: new THREE.Color('#222222') },
   uGradientMode: { value: 0 },
   uParticleRotation: { value: 0 },
+  uParticleScale: { value: 1.0 },
+  uParticleAngle: { value: 0.0 },
 };
 
 // --- Resize Handler ---
@@ -164,6 +173,7 @@ const vertexShader = /* glsl */ `
   uniform float uRippleSpeed;
   uniform float uRippleDecay;
   uniform float uRippleWidth;
+  uniform float uParticleScale;
 
   varying vec3 vColor;
   varying float vDist;
@@ -212,7 +222,7 @@ const vertexShader = /* glsl */ `
       ripple += ring * decay * uRippleStrength;
     }
 
-    float scale = aScale * pulse * wave * (1.0 + influence * uScaleBoost + ripple);
+    float scale = aScale * pulse * wave * (1.0 + influence * uScaleBoost + ripple) * uParticleScale;
     vec3 scaled = position * scale;
 
     // Place at wrapped position (bypass original instanceMatrix position)
@@ -260,6 +270,7 @@ const fragmentShader = /* glsl */ `
   uniform float uGradientMode;
   uniform vec2 uGridSize;
   uniform float uParticleRotation;
+  uniform float uParticleAngle;
   varying vec3 vColor;
   varying float vDist;
   varying vec2 vUv;
@@ -285,7 +296,12 @@ const fragmentShader = /* glsl */ `
   }
 
   void main() {
+    float ca = cos(uParticleAngle);
+    float sa = sin(uParticleAngle);
     vec2 p = vUv - 0.5;
+    if (abs(uParticleAngle) > 0.001) {
+       p = vec2(p.x * ca - p.y * sa, p.x * sa + p.y * ca);
+    }
     float pat = floor(vPattern + 0.5);
 
     // Animated size modulation per shape
@@ -301,11 +317,14 @@ const fragmentShader = /* glsl */ `
     if (uImageParticleEnabled > 0.5) {
       // Particle preset mode — sample shape from canvas texture, keep instance color
       vec2 pUv = vUv;
+      float totalAngle = uParticleAngle;
       if (abs(uParticleRotation) > 0.001) {
-        float angle = uTime * uParticleRotation;
+        totalAngle += uTime * uParticleRotation;
+      }
+      if (abs(totalAngle) > 0.001) {
         vec2 center = pUv - 0.5;
-        float cs = cos(angle);
-        float sn = sin(angle);
+        float cs = cos(totalAngle);
+        float sn = sin(totalAngle);
         pUv = vec2(center.x * cs - center.y * sn, center.x * sn + center.y * cs) + 0.5;
       }
       float alpha = texture2D(uParticleTex, pUv).a;
@@ -317,6 +336,10 @@ const fragmentShader = /* glsl */ `
       float col = mod(charIdx, uAtlasCols);
       float row = floor(charIdx / uAtlasCols);
       vec2 cellUV = vUv; // 0..1 within particle quad
+      if (abs(uParticleAngle) > 0.001) {
+         vec2 center = cellUV - 0.5;
+         cellUV = vec2(center.x * ca - center.y * sa, center.x * sa + center.y * ca) + 0.5;
+      }
       vec2 atlasUV = vec2(
         (col + cellUV.x) / uAtlasCols,
         (row + (1.0 - cellUV.y)) / uAtlasRows
@@ -549,6 +572,112 @@ const colorSchemes = {
 
 let palette = colorSchemes[params.colorScheme];
 
+// --- Font System (Google Fonts + Custom) ---
+const googleFonts = [
+  'Roboto', 'Open Sans', 'Lato', 'Montserrat', 'Oswald', 'Raleway', 'Poppins',
+  'Noto Sans', 'Ubuntu', 'Nunito', 'Playfair Display', 'Merriweather', 'PT Sans',
+  'Rubik', 'Work Sans', 'Fira Sans', 'Quicksand', 'Barlow', 'Mulish', 'Karla',
+  'Inter', 'Josefin Sans', 'Cabin', 'DM Sans', 'Outfit', 'Space Grotesk',
+  'IBM Plex Sans', 'Archivo', 'Manrope', 'Red Hat Display', 'Sora', 'Lexend',
+  'Plus Jakarta Sans', 'Albert Sans', 'Figtree',
+  'Bebas Neue', 'Anton', 'Teko', 'Russo One', 'Orbitron', 'Black Ops One',
+  'Bungee', 'Permanent Marker', 'Bangers', 'Righteous', 'Passion One',
+  'Fredoka One', 'Pacifico', 'Lobster', 'Dancing Script', 'Caveat', 'Satisfy',
+  'Great Vibes', 'Sacramento', 'Kaushan Script', 'Cookie',
+  'Roboto Mono', 'Fira Code', 'JetBrains Mono', 'Source Code Pro', 'Space Mono',
+  'IBM Plex Mono', 'Inconsolata', 'Ubuntu Mono',
+  'Noto Sans JP', 'Noto Sans KR', 'Noto Sans SC', 'Noto Sans TC',
+  'Noto Sans Arabic', 'Noto Sans Hebrew', 'Noto Sans Thai', 'Noto Sans Devanagari',
+  'Press Start 2P', 'VT323', 'Silkscreen', 'Pixelify Sans',
+  'Cormorant Garamond', 'Libre Baskerville', 'EB Garamond', 'Lora', 'Crimson Text',
+  'Abril Fatface', 'Cinzel', 'Bodoni Moda',
+  'Comfortaa', 'Varela Round', 'Baloo 2', 'Fredoka', 'Sniglet',
+  'Titan One', 'Lilita One', 'Bungee Shade', 'Bungee Inline',
+  'Special Elite', 'Courier Prime', 'Cutive Mono', 'Major Mono Display',
+].sort();
+
+const systemFonts = ['monospace', 'sans-serif', 'serif', 'cursive', 'fantasy'];
+const allFontChoices = {};
+allFontChoices['Custom font file…'] = '__custom__';
+allFontChoices['─── System ───'] = '__sep_sys__';
+systemFonts.forEach(f => { allFontChoices[f] = f; });
+allFontChoices['─── Google Fonts ───'] = '__sep_gf__';
+googleFonts.forEach(f => { allFontChoices[f] = f; });
+
+const loadedGoogleFonts = new Set();
+
+async function loadGoogleFont(fontName) {
+  if (loadedGoogleFonts.has(fontName)) return;
+  loadedGoogleFonts.add(fontName);
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(fontName)}:wght@400;700&display=swap`;
+  document.head.appendChild(link);
+  await new Promise(r => { link.onload = r; link.onerror = r; });
+  await document.fonts.load(`bold 96px "${fontName}"`);
+}
+
+const fontFileInput = document.createElement('input');
+fontFileInput.type = 'file';
+fontFileInput.accept = '.ttf,.otf,.woff,.woff2';
+fontFileInput.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none;';
+document.body.appendChild(fontFileInput);
+
+let pendingFontApply = null;
+
+fontFileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  const pending = pendingFontApply;
+  pendingFontApply = null;
+  if (!file || !pending) {
+    fontFileInput.value = '';
+    return;
+  }
+  const fontName = file.name.replace(/\.[^.]+$/, '');
+  const buffer = await file.arrayBuffer();
+  const face = new FontFace(fontName, buffer);
+  await face.load();
+  document.fonts.add(face);
+  params[pending.paramKey] = fontName;
+  pending.rebuild();
+  pending.btnCtrl.show(false);
+  fontFileInput.value = '';
+});
+
+fontFileInput.addEventListener('cancel', () => {
+  if (pendingFontApply) pendingFontApply.btnCtrl.show(false);
+  pendingFontApply = null;
+  fontFileInput.value = '';
+});
+
+function setupFontControl(folder, paramKey, rebuild) {
+  const ctrl = folder.add(params, paramKey, allFontChoices).name('Font');
+  const btnObj = { choose() { pendingFontApply = { paramKey, rebuild, ctrl, btnCtrl }; fontFileInput.click(); } };
+  const btnCtrl = folder.add(btnObj, 'choose').name('Choose file…');
+  btnCtrl.show(false);
+
+  ctrl.onChange(v => {
+    if (v === '__sep_sys__' || v === '__sep_gf__') {
+      ctrl.setValue(params[paramKey]);
+      return;
+    }
+    if (v === '__custom__') {
+      ctrl.setValue(params[paramKey]);
+      btnCtrl.show(true);
+      return;
+    }
+    btnCtrl.show(false);
+    if (!systemFonts.includes(v)) {
+      loadGoogleFont(v).then(() => { params[paramKey] = v; rebuild(); });
+      return;
+    }
+    params[paramKey] = v;
+    rebuild();
+  });
+
+  return { ctrl, btnCtrl };
+}
+
 // --- Font Atlas Generator ---
 let fontAtlasTexture = null;
 let fontAtlasChars = '';
@@ -566,7 +695,8 @@ function buildFontAtlas(str) {
   const ctx = atlasCanvas.getContext('2d');
   ctx.clearRect(0, 0, atlasCanvas.width, atlasCanvas.height);
   ctx.fillStyle = '#ffffff';
-  ctx.font = `bold ${cellPx * 0.75}px monospace`;
+  const atlasF = systemFonts.includes(params.atlasFont) ? params.atlasFont : `"${params.atlasFont}"`;
+  ctx.font = `bold ${cellPx * 0.75}px ${atlasF}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (let i = 0; i < numChars; i++) {
@@ -597,12 +727,13 @@ function buildTextMaskTexture(str) {
   ctx.clearRect(0, 0, pxWidth, pxHeight);
   ctx.fillStyle = '#ffffff';
   // Auto-size font to fit canvas width
+  const maskF = systemFonts.includes(params.maskFont) ? params.maskFont : `"${params.maskFont}"`;
   let fontSize = pxHeight * 0.8;
-  ctx.font = `bold ${fontSize}px sans-serif`;
+  ctx.font = `bold ${fontSize}px ${maskF}`;
   let textW = ctx.measureText(str).width;
   if (textW > pxWidth * 0.9) {
     fontSize *= (pxWidth * 0.9) / textW;
-    ctx.font = `bold ${fontSize}px sans-serif`;
+    ctx.font = `bold ${fontSize}px ${maskF}`;
   }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -985,12 +1116,36 @@ videoInput.addEventListener('change', (e) => {
 // --- Default Config (snapshot of initial params) ---
 const defaultConfig = { ...params };
 
-function randomizeParams() {
+async function randomizeParams() {
   const schemeKeys = Object.keys(colorSchemes);
   const gradKeys = Object.keys(gradientPresets);
-  // Keep cols/rows unchanged
-  params.cellSize = 0.1 + Math.random() * 0.2;
-  params.gap = Math.random() * 0.06;
+  
+  if (params.highDetailedMode) {
+    params.cellSize = 0.02 + Math.random() * 0.03;
+    params.gap = Math.random() * 0.01;
+    params.cols = 600;
+    params.rows = 500;
+  } else if (params.lowDetailedMode) {
+    params.cellSize = 0.3 + Math.random() * 0.3;
+    params.gap = Math.random() * 0.05 + 0.02;
+    params.cols = 15 + Math.floor(Math.random() * 20);
+    params.rows = 15 + Math.floor(Math.random() * 20);
+  } else {
+    if (params.layoutRandomMode === 'None') {
+      params.cellSize = 0.1 + Math.random() * 0.2;
+      params.gap = Math.random() * 0.06;
+      params.cols = 30 + Math.floor(Math.random() * 100);
+      params.rows = 30 + Math.floor(Math.random() * 100);
+    } else if (params.layoutRandomMode === 'Freeze All') {
+      // Freeze All -> do nothing to layout
+    } else {
+      // Auto (default)
+      params.cellSize = 0.1 + Math.random() * 0.2;
+      params.gap = Math.random() * 0.06;
+      // cols/rows unchanged
+    }
+  }
+
   const bgRoll = Math.random();
   if (bgRoll < 0.85) {
     params.bgColor = ['#000000', '#050505', '#080808', '#0a0a0a', '#0c0c0c'][Math.floor(Math.random() * 5)];
@@ -1011,6 +1166,14 @@ function randomizeParams() {
   params.waveAmplitude = Math.random() * 0.25;
   params.waveFrequency = 0.2 + Math.random() * 2.0;
   params.particlePreset = particlePresetNames[Math.floor(Math.random() * particlePresetNames.length)];
+
+  // Randomize fonts
+  const randAtlas = googleFonts[Math.floor(Math.random() * googleFonts.length)];
+  const randMask = googleFonts[Math.floor(Math.random() * googleFonts.length)];
+  await Promise.all([loadGoogleFont(randAtlas), loadGoogleFont(randMask)]);
+  params.atlasFont = randAtlas;
+  params.maskFont = randMask;
+
   params.mouseEnabled = true;
   params.radius = 2.0 + Math.random() * 5.0;
   params.scaleBoost = 0.5 + Math.random() * 2.5;
@@ -1093,9 +1256,12 @@ function applyConfig(config) {
   uniforms.uMediaBrightness.value = params.imageBrightness;
   uniforms.uMediaSoftness.value = params.imageSoftness;
   uniforms.uMediaInvert.value = params.imageInvert ? 1 : 0;
+  uniforms.uParticleScale.value = params.particleScale;
+  uniforms.uParticleAngle.value = params.particleAngle;
   buildParticlePresetTexture(params.particlePreset);
   textSettingsFolder.show(params.particlePreset === 'Text');
   spiralSettingsFolder.show(params.particlePreset === 'Spiral');
+
   if (colorSchemes[params.colorScheme]) palette = colorSchemes[params.colorScheme];
   applyGradientPreset(params.gradientPreset);
   uniforms.uRippleStrength.value = params.rippleStrength;
@@ -1177,32 +1343,47 @@ textMaskFolder.add(params, 'textMaskString').name('Text').onFinishChange(v => {
     setMediaTexture(tex);
   }
 });
+setupFontControl(textMaskFolder, 'maskFont', () => {
+  if (params.inputMode === 6 && params.textMaskString.length > 0) {
+    const tex = buildTextMaskTexture(params.textMaskString);
+    setMediaTexture(tex);
+  }
+});
 textMaskFolder.show(false);
 
-// --- Layout / Grid ---
-const layoutFolder = gui.addFolder('Layout').close();
-layoutFolder.add(params, 'cols', 10, 600, 1).name('Columns').onFinishChange(buildGrid);
-layoutFolder.add(params, 'rows', 10, 600, 1).name('Rows').onFinishChange(buildGrid);
-layoutFolder.add(params, 'cellSize', 0.1, 0.5, 0.01).name('Cell Size').onFinishChange(buildGrid);
-layoutFolder.add(params, 'gap', 0.0, 0.15, 0.005).name('Gap').onFinishChange(buildGrid);
-layoutFolder.add(params, 'particlePreset', particlePresetNames).name('Particle Shape').onChange(v => {
+// --- Particle Shape ---
+const particleFolder = gui.addFolder('Particle Shape').close();
+particleFolder.add(params, 'particlePreset', particlePresetNames).name('Preset').onChange(v => {
   buildParticlePresetTexture(v);
   textSettingsFolder.show(v === 'Text');
   spiralSettingsFolder.show(v === 'Spiral');
   buildGrid();
 });
-const spiralSettingsFolder = layoutFolder.addFolder('Spiral Settings');
+particleFolder.add(params, 'particleScale', 0.1, 5.0, 0.01).name('Scale').onChange(v => { uniforms.uParticleScale.value = v; });
+particleFolder.add(params, 'particleAngle', 0.0, Math.PI * 2, 0.01).name('Angle').onChange(v => { uniforms.uParticleAngle.value = v; });
+
+const spiralSettingsFolder = particleFolder.addFolder('Spiral Settings');
 spiralSettingsFolder.add(params, 'spiralSpeed', -10, 10, 0.1).name('Rotation Speed').onChange(v => {
   uniforms.uParticleRotation.value = v;
 });
 spiralSettingsFolder.show(params.particlePreset === 'Spiral');
-const textSettingsFolder = layoutFolder.addFolder('Text Settings');
+
+const textSettingsFolder = particleFolder.addFolder('Text Settings');
 textSettingsFolder.add(params, 'textLayout', { Random: 0, Sequential: 1 }).name('Text Layout').onChange(v => {
   params.textLayout = Number(v);
   buildGrid();
 });
 textSettingsFolder.add(params, 'textString').name('Characters').onFinishChange(buildGrid);
+setupFontControl(textSettingsFolder, 'atlasFont', buildGrid);
 textSettingsFolder.show(params.particlePreset === 'Text');
+
+// --- Layout / Grid ---
+const layoutFolder = gui.addFolder('Layout').close();
+layoutFolder.add(params, 'cols', 10, 600, 1).name('Columns').onFinishChange(buildGrid);
+layoutFolder.add(params, 'rows', 10, 600, 1).name('Rows').onFinishChange(buildGrid);
+layoutFolder.add(params, 'cellSize', 0.02, 0.5, 0.01).name('Cell Size').onFinishChange(buildGrid);
+layoutFolder.add(params, 'gap', 0.0, 0.15, 0.005).name('Gap').onFinishChange(buildGrid);
+layoutFolder.add(params, 'layoutRandomMode', ['Auto', 'Freeze All', 'None']).name('Random Mode');
 
 // --- Animation ---
 const animFolder = gui.addFolder('Animation').close();
@@ -1335,7 +1516,49 @@ canvas.addEventListener('pointerleave', () => {
 canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
 // --- Config (bottom of GUI) ---
+let savedLayoutBeforeDetail = null;
+
+function applyDetailMode(mode) {
+  if (mode === 'high') {
+    savedLayoutBeforeDetail = { cols: params.cols, rows: params.rows, cellSize: params.cellSize, gap: params.gap };
+    params.cols = 600;
+    params.rows = 500;
+    params.cellSize = 0.02;
+    params.gap = 0.005;
+  } else if (mode === 'low') {
+    savedLayoutBeforeDetail = { cols: params.cols, rows: params.rows, cellSize: params.cellSize, gap: params.gap };
+    params.cols = 20;
+    params.rows = 20;
+    params.cellSize = 0.45;
+    params.gap = 0.04;
+  } else if (savedLayoutBeforeDetail) {
+    params.cols = savedLayoutBeforeDetail.cols;
+    params.rows = savedLayoutBeforeDetail.rows;
+    params.cellSize = savedLayoutBeforeDetail.cellSize;
+    params.gap = savedLayoutBeforeDetail.gap;
+    savedLayoutBeforeDetail = null;
+  }
+  buildGrid();
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+}
+
 const configFolder = gui.addFolder('Config').close();
+configFolder.add(params, 'highDetailedMode').name('High Detailed Mode').onChange(v => {
+  if (v) {
+    params.lowDetailedMode = false;
+    applyDetailMode('high');
+  } else {
+    applyDetailMode('off');
+  }
+});
+configFolder.add(params, 'lowDetailedMode').name('Low Detailed Mode').onChange(v => {
+  if (v) {
+    params.highDetailedMode = false;
+    applyDetailMode('low');
+  } else {
+    applyDetailMode('off');
+  }
+});
 configFolder.add({ fn: () => {
   const cfg = { ...defaultConfig };
   // Preserve input, text, and particle preset settings
