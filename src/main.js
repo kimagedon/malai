@@ -30,7 +30,7 @@ const params = {
   scaleBoost: 1.8,
   mouseEnabled: true,
   bgColor: '#080808',
-  dimAmount: 0.55,
+  dimAmount: 1.0,
   animSpeed: 1.0,
   inputMode: 0,          // 0=rectangle, 1=star, 2=cross, 3=image, 4=video, 5=webcam
   crossThickness: 0.2,
@@ -43,6 +43,26 @@ const params = {
   imageContrast: 1.0,
   imageBrightness: 0.0,
   imageSoftness: 0.1,
+  textParticles: false,
+  textString: 'MALAI',
+  textLayout: 1,           // 0=random, 1=sequential (repeating text)
+  textMaskString: 'MALAI',
+  particlePreset: 'Default',
+  spiralSpeed: 3.0,
+  flowSpeedX: 0.15,
+  flowSpeedY: 0.1,
+  pulseAmplitude: 0.15,
+  pulseFrequency: 1.2,
+  waveAmplitude: 0.1,
+  waveFrequency: 0.8,
+  colorScheme: 'Thermal',
+  gradientEnabled: false,
+  gradientPreset: 'Monochrome',
+  rippleEnabled: true,
+  rippleStrength: 2.5,
+  rippleSpeed: 7.5,
+  rippleDecay: 2.0,
+  rippleWidth: 1.5,
 };
 
 // --- Shader Uniforms (must be before resize handler) ---
@@ -67,6 +87,34 @@ const uniforms = {
   uMediaContrast: { value: 1.0 },
   uMediaBrightness: { value: 0.0 },
   uMediaSoftness: { value: 0.1 },
+  uFontAtlas: { value: null },
+  uTextEnabled: { value: 0 },
+  uAtlasCols: { value: 1 },
+  uAtlasRows: { value: 1 },
+  uParticleTex: { value: null },
+  uImageParticleEnabled: { value: 0 },
+  uFlowSpeed: { value: new THREE.Vector2(0.15, 0.1) },
+  uPulseAmp: { value: 0.15 },
+  uPulseFreq: { value: 1.2 },
+  uWaveAmp: { value: 0.1 },
+  uWaveFreq: { value: 0.8 },
+  uRipples: { value: [
+    new THREE.Vector4(0, 0, -100, 0),
+    new THREE.Vector4(0, 0, -100, 0),
+    new THREE.Vector4(0, 0, -100, 0),
+    new THREE.Vector4(0, 0, -100, 0),
+    new THREE.Vector4(0, 0, -100, 0),
+  ]},
+  uRippleStrength: { value: 2.5 },
+  uRippleSpeed: { value: 7.5 },
+  uRippleDecay: { value: 2.0 },
+  uRippleWidth: { value: 1.5 },
+  uGradientEnabled: { value: 0 },
+  uGradColorA: { value: new THREE.Color('#ffffff') },
+  uGradColorB: { value: new THREE.Color('#888888') },
+  uGradColorC: { value: new THREE.Color('#222222') },
+  uGradientMode: { value: 0 },
+  uParticleRotation: { value: 0 },
 };
 
 // --- Resize Handler ---
@@ -106,6 +154,16 @@ const vertexShader = /* glsl */ `
   uniform float uScaleBoost;
   uniform vec2 uGridSize;
   uniform vec2 uViewport;
+  uniform vec2 uFlowSpeed;
+  uniform float uPulseAmp;
+  uniform float uPulseFreq;
+  uniform float uWaveAmp;
+  uniform float uWaveFreq;
+  uniform vec4 uRipples[5];
+  uniform float uRippleStrength;
+  uniform float uRippleSpeed;
+  uniform float uRippleDecay;
+  uniform float uRippleWidth;
 
   varying vec3 vColor;
   varying float vDist;
@@ -124,7 +182,7 @@ const vertexShader = /* glsl */ `
     vec2 worldPos = vec2(instanceMatrix[3][0], instanceMatrix[3][1]);
 
     // Diagonal drift with wrapping — infinite scroll
-    vec2 drift = vec2(uTime * 0.15, uTime * 0.1);
+    vec2 drift = uTime * uFlowSpeed;
     vec2 halfGrid = uGridSize * 0.5;
     // Shift to 0..gridSize range, add drift, wrap, shift back to centered
     vec2 wrappedPos = wrapMod(worldPos + halfGrid + drift, uGridSize) - halfGrid;
@@ -136,12 +194,25 @@ const vertexShader = /* glsl */ `
 
     // Ambient pulse: slow breathing based on position
     float phase = wrappedPos.x * 0.8 + wrappedPos.y * 0.6;
-    float pulse = sin(uTime * 1.2 + phase) * 0.15 + 1.0;
+    float pulse = sin(uTime * uPulseFreq + phase) * uPulseAmp + 1.0;
 
     // Traveling wave
-    float wave = sin(uTime * 0.8 - length(wrappedPos) * 0.5) * 0.1 + 1.0;
+    float wave = sin(uTime * uWaveFreq - length(wrappedPos) * 0.5) * uWaveAmp + 1.0;
 
-    float scale = aScale * pulse * wave * (1.0 + influence * uScaleBoost);
+    // Click ripple waves
+    float ripple = 0.0;
+    for (int i = 0; i < 5; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.w < 0.5) continue; // inactive
+      float age = uTime - rp.z;
+      float d = distance(wrappedPos, rp.xy);
+      float front = age * uRippleSpeed;
+      float ring = exp(-pow((d - front) / uRippleWidth, 2.0));
+      float decay = exp(-age * uRippleDecay);
+      ripple += ring * decay * uRippleStrength;
+    }
+
+    float scale = aScale * pulse * wave * (1.0 + influence * uScaleBoost + ripple);
     vec3 scaled = position * scale;
 
     // Place at wrapped position (bypass original instanceMatrix position)
@@ -176,7 +247,19 @@ const fragmentShader = /* glsl */ `
   uniform float uMediaContrast;
   uniform float uMediaBrightness;
   uniform float uMediaSoftness;
-
+  uniform sampler2D uFontAtlas;
+  uniform float uTextEnabled;
+  uniform float uAtlasCols;
+  uniform float uAtlasRows;
+  uniform sampler2D uParticleTex;
+  uniform float uImageParticleEnabled;
+  uniform float uGradientEnabled;
+  uniform vec3 uGradColorA;
+  uniform vec3 uGradColorB;
+  uniform vec3 uGradColorC;
+  uniform float uGradientMode;
+  uniform vec2 uGridSize;
+  uniform float uParticleRotation;
   varying vec3 vColor;
   varying float vDist;
   varying vec2 vUv;
@@ -215,7 +298,33 @@ const fragmentShader = /* glsl */ `
     // Brightness wave across grid
     float brightWave = sin(uTime * 0.5 + vWorldPos.x * 0.4 + vWorldPos.y * 0.3) * 0.15;
 
-    if (pat < 0.5) {
+    if (uImageParticleEnabled > 0.5) {
+      // Particle preset mode — sample shape from canvas texture, keep instance color
+      vec2 pUv = vUv;
+      if (abs(uParticleRotation) > 0.001) {
+        float angle = uTime * uParticleRotation;
+        vec2 center = pUv - 0.5;
+        float cs = cos(angle);
+        float sn = sin(angle);
+        pUv = vec2(center.x * cs - center.y * sn, center.x * sn + center.y * cs) + 0.5;
+      }
+      float alpha = texture2D(uParticleTex, pUv).a;
+      shape = step(0.1, alpha);
+
+    } else if (uTextEnabled > 0.5) {
+      // Text particle mode — sample character from font atlas
+      float charIdx = pat;
+      float col = mod(charIdx, uAtlasCols);
+      float row = floor(charIdx / uAtlasCols);
+      vec2 cellUV = vUv; // 0..1 within particle quad
+      vec2 atlasUV = vec2(
+        (col + cellUV.x) / uAtlasCols,
+        (row + (1.0 - cellUV.y)) / uAtlasRows
+      );
+      float alpha = texture2D(uFontAtlas, atlasUV).r;
+      shape = step(0.3, alpha);
+
+    } else if (pat < 0.5) {
       // 0: Filled square
       shape = 1.0 - step(0.0, sdBox(p, vec2(sizeAnim + 0.07)));
 
@@ -337,6 +446,27 @@ const fragmentShader = /* glsl */ `
       edgeFade *= imgFade;
     }
 
+    // --- Gradient overlay ---
+    if (uGradientEnabled > 0.5) {
+      vec2 normPos = vWorldPos / (uGridSize * 0.5);
+      float gradMode = floor(uGradientMode + 0.5);
+      float t;
+      if (gradMode < 0.5) {
+        t = normPos.x * 0.5 + 0.5;          // horizontal
+      } else if (gradMode < 1.5) {
+        t = normPos.y * 0.5 + 0.5;          // vertical
+      } else if (gradMode < 2.5) {
+        t = length(normPos) * 0.707;         // radial
+      } else {
+        t = (normPos.x + normPos.y) * 0.25 + 0.5; // diagonal
+      }
+      t = clamp(t, 0.0, 1.0);
+      vec3 gradCol = t < 0.5
+        ? mix(uGradColorA, uGradColorB, t * 2.0)
+        : mix(uGradColorB, uGradColorC, (t - 0.5) * 2.0);
+      baseCol = gradCol;
+    }
+
     float brightness = mix(uDim, 1.0, 0.3 + vDist * 0.7) + brightWave;
     vec3 col = baseCol * brightness;
     col = mix(uBgColor, col, edgeFade);
@@ -352,21 +482,136 @@ const baseMat = new THREE.ShaderMaterial({
   transparent: true,
 });
 
-// --- Warm Palette (inspired by refs) ---
-const palette = [
-  0xff3b30, // red
-  0xff6b35, // orange
-  0xffcc00, // yellow
-  0xff2d55, // hot pink
-  0xf5a0c0, // soft pink
-  0x4cd964, // green
-  0x30d158, // bright green
-  0x5ac8fa, // sky blue
-  0xaf52de, // purple
-  0xff9500, // amber
-  0xe8d44d, // warm yellow
-  0xc75050, // dark red
-];
+// --- Color Schemes ---
+const colorSchemes = {
+  Thermal: [
+    0xff3b30, 0xff6b35, 0xffcc00, 0xff2d55, 0xf5a0c0,
+    0x4cd964, 0x30d158, 0x5ac8fa, 0xaf52de, 0xff9500,
+    0xe8d44d, 0xc75050,
+  ],
+  'Neon Magenta': [
+    0xff00ff, 0x00ffff, 0xffff00, 0xff0066, 0x6600ff,
+    0x00ff99, 0xff3399, 0x33ffcc, 0xcc00ff, 0x00ccff,
+  ],
+  'Retro Sunset': [
+    0xff6b35, 0xf7c59f, 0xef8354, 0x2d6a4f, 0x1a535c,
+    0xbc4749, 0xf2cc8f, 0xe07a5f, 0x3d405b, 0x81b29a,
+  ],
+  Forest: [
+    0x2d6a4f, 0x40916c, 0x52b788, 0x74c69d, 0x95d5b2,
+    0xb7e4c7, 0xd8f3dc, 0x1b4332, 0x345e3b, 0x588157,
+  ],
+  Monochrome: [
+    0xffffff, 0xdddddd, 0xbbbbbb, 0x999999, 0x777777,
+    0x555555, 0x333333, 0xaaaaaa, 0xcccccc, 0x666666,
+  ],
+  Ocean: [
+    0x03045e, 0x023e8a, 0x0077b6, 0x0096c7, 0x00b4d8,
+    0x48cae4, 0x90e0ef, 0xade8f4, 0xcaf0f8, 0x0466c8,
+  ],
+  Neon: [
+    0xff006e, 0xfb5607, 0xffbe0b, 0x8338ec, 0x3a86ff,
+    0x06d6a0, 0xff4cc3, 0x7209b7, 0xf72585, 0x4cc9f0,
+  ],
+  Lava: [
+    0xff0000, 0xff4400, 0xff8800, 0xffaa00, 0xffcc00,
+    0xffee00, 0xcc3300, 0x991100, 0xff6600, 0xffdd33,
+  ],
+  Pastel: [
+    0xffadad, 0xffd6a5, 0xfdffb6, 0xcaffbf, 0x9bf6ff,
+    0xa0c4ff, 0xbdb2ff, 0xffc6ff, 0xfffffc, 0xfee2e2,
+  ],
+  Arctic: [
+    0xe0f7fa, 0xb2ebf2, 0x80deea, 0x4dd0e1, 0x26c6da,
+    0x00bcd4, 0x00acc1, 0x0097a7, 0x00838f, 0x006064,
+  ],
+  Candy: [
+    0xff6f91, 0xff9671, 0xffc75f, 0xf9f871, 0xd65db1,
+    0x845ec2, 0x2c73d2, 0x0089ba, 0x008e9b, 0x00c9a7,
+  ],
+  Rust: [
+    0x6e3b3b, 0x8b4513, 0xa0522d, 0xb8733e, 0xcd853f,
+    0xd2a679, 0xdeb887, 0xc97f4f, 0x964b00, 0x7a3b2e,
+  ],
+  Vaporwave: [
+    0xff71ce, 0x01cdfe, 0x05ffa1, 0xb967ff, 0xfffb96,
+    0xff6eb4, 0x7afcff, 0xfeff9c, 0xc774e8, 0x00f5d4,
+  ],
+  Galaxy: [
+    0x1a0533, 0x2d1b69, 0x4b0082, 0x6a0dad, 0x8b00ff,
+    0x9b30ff, 0xba55d3, 0xda70d6, 0xee82ee, 0x4169e1,
+  ],
+  Autumn: [
+    0x8b0000, 0xb22222, 0xcc5500, 0xd2691e, 0xdaa520,
+    0xe8b830, 0xf0c040, 0x556b2f, 0x6b8e23, 0x8b4513,
+  ],
+};
+
+let palette = colorSchemes[params.colorScheme];
+
+// --- Font Atlas Generator ---
+let fontAtlasTexture = null;
+let fontAtlasChars = '';
+
+function buildFontAtlas(str) {
+  const uniqueChars = [...new Set(str)];
+  fontAtlasChars = uniqueChars.join('');
+  const numChars = uniqueChars.length;
+  const cols = Math.ceil(Math.sqrt(numChars));
+  const rows = Math.ceil(numChars / cols);
+  const cellPx = 128;
+  const atlasCanvas = document.createElement('canvas');
+  atlasCanvas.width = cols * cellPx;
+  atlasCanvas.height = rows * cellPx;
+  const ctx = atlasCanvas.getContext('2d');
+  ctx.clearRect(0, 0, atlasCanvas.width, atlasCanvas.height);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold ${cellPx * 0.75}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < numChars; i++) {
+    const c = i % cols;
+    const r = Math.floor(i / cols);
+    const x = c * cellPx + cellPx * 0.5;
+    const y = r * cellPx + cellPx * 0.5;
+    ctx.fillText(uniqueChars[i], x, y);
+  }
+  if (fontAtlasTexture) fontAtlasTexture.dispose();
+  fontAtlasTexture = new THREE.CanvasTexture(atlasCanvas);
+  fontAtlasTexture.flipY = false;
+  fontAtlasTexture.minFilter = THREE.LinearFilter;
+  fontAtlasTexture.magFilter = THREE.LinearFilter;
+  uniforms.uFontAtlas.value = fontAtlasTexture;
+  uniforms.uAtlasCols.value = cols;
+  uniforms.uAtlasRows.value = rows;
+  return numChars;
+}
+
+function buildTextMaskTexture(str) {
+  const maskCanvas = document.createElement('canvas');
+  const pxWidth = 1024;
+  const pxHeight = 512;
+  maskCanvas.width = pxWidth;
+  maskCanvas.height = pxHeight;
+  const ctx = maskCanvas.getContext('2d');
+  ctx.clearRect(0, 0, pxWidth, pxHeight);
+  ctx.fillStyle = '#ffffff';
+  // Auto-size font to fit canvas width
+  let fontSize = pxHeight * 0.8;
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  let textW = ctx.measureText(str).width;
+  if (textW > pxWidth * 0.9) {
+    fontSize *= (pxWidth * 0.9) / textW;
+    ctx.font = `bold ${fontSize}px sans-serif`;
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(str, pxWidth * 0.5, pxHeight * 0.5);
+  const tex = new THREE.CanvasTexture(maskCanvas);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
 
 // --- Seeded pseudo-random for deterministic patterns ---
 function mulberry32(a) {
@@ -403,11 +648,31 @@ function buildGrid() {
   const scaleArray = new Float32Array(total);
   const rand = mulberry32(42); // deterministic seed
 
+  // Build font atlas if text particles enabled
+  let numChars = 0;
+  if (params.textParticles && params.textString.length > 0) {
+    numChars = buildFontAtlas(params.textString);
+    uniforms.uTextEnabled.value = 1;
+  } else {
+    uniforms.uTextEnabled.value = 0;
+  }
+
   for (let i = 0; i < total; i++) {
     const c = i % totalCols;
     const r = Math.floor(i / totalCols);
     const hash = rand();
-    patternArray[i] = Math.floor(hash * 8);
+    if (params.textParticles && numChars > 0) {
+      if (params.textLayout === 1) {
+        // Sequential: repeat text string across grid left-to-right, bottom-to-top
+        const seqIdx = i % params.textString.length;
+        const ch = params.textString[seqIdx];
+        patternArray[i] = fontAtlasChars.indexOf(ch);
+      } else {
+        patternArray[i] = Math.floor(hash * numChars);
+      }
+    } else {
+      patternArray[i] = Math.floor(hash * 8);
+    }
 
     const sizeRoll = rand();
     if (sizeRoll > 0.92) {
@@ -480,6 +745,119 @@ videoInput.accept = 'video/*';
 videoInput.style.display = 'none';
 document.body.appendChild(videoInput);
 
+// --- Particle Shape Presets ---
+let particleTexture = null;
+
+function buildParticlePresetTexture(name) {
+  // Handle Text and Default — no particle texture needed
+  params.textParticles = (name === 'Text');
+  uniforms.uTextEnabled.value = params.textParticles ? 1 : 0;
+
+  uniforms.uParticleRotation.value = (name === 'Spiral') ? params.spiralSpeed : 0;
+
+  if (name === 'Default' || name === 'Text') {
+    if (particleTexture) { particleTexture.dispose(); particleTexture = null; }
+    uniforms.uParticleTex.value = null;
+    uniforms.uImageParticleEnabled.value = 0;
+    return;
+  }
+  const sz = 128;
+  const c = document.createElement('canvas');
+  c.width = sz; c.height = sz;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, sz, sz);
+  const cx = sz / 2, cy = sz / 2;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = sz * 0.06;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (name === 'Lightning') {
+    ctx.beginPath();
+    ctx.moveTo(cx + sz * 0.1, cy - sz * 0.4);
+    ctx.lineTo(cx - sz * 0.05, cy - sz * 0.05);
+    ctx.lineTo(cx + sz * 0.08, cy - sz * 0.05);
+    ctx.lineTo(cx - sz * 0.1, cy + sz * 0.4);
+    ctx.lineTo(cx + sz * 0.05, cy + sz * 0.05);
+    ctx.lineTo(cx - sz * 0.08, cy + sz * 0.05);
+    ctx.closePath();
+    ctx.fill();
+
+  } else if (name === 'Hexagon') {
+    const r = sz * 0.4;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i * Math.PI / 3) - Math.PI / 6;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+  } else if (name === 'Flower') {
+    const petalR = sz * 0.18;
+    const centerR = sz * 0.12;
+    for (let i = 0; i < 6; i++) {
+      const a = (i * Math.PI / 3);
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * petalR, cy + Math.sin(a) * petalR, petalR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(cx, cy, centerR, 0, Math.PI * 2);
+    ctx.fill();
+
+  } else if (name === 'Spiral') {
+    ctx.beginPath();
+    for (let a = 0; a < Math.PI * 6; a += 0.1) {
+      const r = (a / (Math.PI * 6)) * sz * 0.4;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      a === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.lineWidth = sz * 0.06;
+    ctx.stroke();
+
+  } else if (name === 'Eye') {
+    // Almond shape
+    ctx.beginPath();
+    ctx.moveTo(cx - sz * 0.4, cy);
+    ctx.quadraticCurveTo(cx, cy - sz * 0.3, cx + sz * 0.4, cy);
+    ctx.quadraticCurveTo(cx, cy + sz * 0.3, cx - sz * 0.4, cy);
+    ctx.fill();
+    // Pupil (cut out and redraw)
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.arc(cx, cy, sz * 0.13, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.beginPath();
+    ctx.arc(cx, cy, sz * 0.13, 0, Math.PI * 2);
+    ctx.fill();
+    // Iris ring
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.arc(cx, cy, sz * 0.06, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  if (particleTexture) particleTexture.dispose();
+  particleTexture = new THREE.CanvasTexture(c);
+  particleTexture.flipY = false;
+  particleTexture.minFilter = THREE.LinearFilter;
+  particleTexture.magFilter = THREE.LinearFilter;
+  uniforms.uParticleTex.value = particleTexture;
+  uniforms.uImageParticleEnabled.value = 1;
+}
+
+const particlePresetNames = [
+  'Default', 'Text', 'Lightning', 'Hexagon', 'Flower', 'Spiral', 'Eye'
+];
+
 const videoEl = document.createElement('video');
 videoEl.playsInline = true;
 videoEl.muted = true;
@@ -520,6 +898,7 @@ function activateInput(mode) {
   crossFolder.show(false);
   starFolder.show(false);
   mediaSettingsFolder.show(false);
+  textMaskFolder.show(false);
 
   if (mode === 0) {
     // Rectangle — default shape
@@ -546,6 +925,13 @@ function activateInput(mode) {
     // Webcam
     loadFileBtn.show(false);
     startWebcam();
+  } else if (mode === 6) {
+    // Text mask
+    textMaskFolder.show(true);
+    mediaSettingsFolder.show(true);
+    loadFileBtn.show(false);
+    const tex = buildTextMaskTexture(params.textMaskString);
+    setMediaTexture(tex);
   }
 }
 
@@ -596,13 +982,146 @@ videoInput.addEventListener('change', (e) => {
   videoInput.value = '';
 });
 
-// --- lil-gui ---
-const gui = new GUI({ title: 'MALAI Controls' });
+// --- Default Config (snapshot of initial params) ---
+const defaultConfig = { ...params };
 
-// --- Input (first folder) ---
-const inputFolder = gui.addFolder('Input');
+function randomizeParams() {
+  const schemeKeys = Object.keys(colorSchemes);
+  const gradKeys = Object.keys(gradientPresets);
+  // Keep cols/rows unchanged
+  params.cellSize = 0.1 + Math.random() * 0.2;
+  params.gap = Math.random() * 0.06;
+  const bgRoll = Math.random();
+  if (bgRoll < 0.85) {
+    params.bgColor = ['#000000', '#050505', '#080808', '#0a0a0a', '#0c0c0c'][Math.floor(Math.random() * 5)];
+  } else if (bgRoll < 0.95) {
+    params.bgColor = ['#f5f5f5', '#fefefe', '#f0f0f0', '#e8e8e8'][Math.floor(Math.random() * 4)];
+  } else {
+    params.bgColor = ['#0a0000', '#020824', '#0a1a0a', '#1a0a1a', '#1a0a2e'][Math.floor(Math.random() * 5)];
+  }
+  // Keep dimAmount unchanged
+  params.colorScheme = schemeKeys[Math.floor(Math.random() * schemeKeys.length)];
+  params.gradientEnabled = Math.random() > 0.4;
+  params.gradientPreset = gradKeys[Math.floor(Math.random() * gradKeys.length)];
+  params.animSpeed = 0.2 + Math.random() * 3.0;
+  params.flowSpeedX = (Math.random() - 0.3) * 0.4;
+  params.flowSpeedY = (Math.random() - 0.3) * 0.4;
+  params.pulseAmplitude = Math.random() * 0.3;
+  params.pulseFrequency = 0.2 + Math.random() * 2.5;
+  params.waveAmplitude = Math.random() * 0.25;
+  params.waveFrequency = 0.2 + Math.random() * 2.0;
+  params.particlePreset = particlePresetNames[Math.floor(Math.random() * particlePresetNames.length)];
+  params.mouseEnabled = true;
+  params.radius = 2.0 + Math.random() * 5.0;
+  params.scaleBoost = 0.5 + Math.random() * 2.5;
+  // Keep ripple and inputMode unchanged
+  applyConfig(params);
+}
+
+// --- State Management (export/import config) ---
+function exportConfig() {
+  const json = JSON.stringify(params, null, 2);
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const filename = `malai-${stamp}.json`;
+
+  // Use showSaveFilePicker when available (Chrome/Edge), fallback to blob link
+  if (window.showSaveFilePicker) {
+    window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+    }).then(handle => handle.createWritable())
+      .then(writable => writable.write(json).then(() => writable.close()))
+      .catch(() => {});
+  } else {
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 1000);
+  }
+}
+
+const configInput = document.createElement('input');
+configInput.type = 'file';
+configInput.accept = '.json';
+configInput.style.display = 'none';
+document.body.appendChild(configInput);
+
+function importConfig() {
+  configInput.click();
+}
+
+configInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const config = JSON.parse(reader.result);
+      applyConfig(config);
+    } catch (err) {
+      console.warn('Invalid config file:', err);
+    }
+  };
+  reader.readAsText(file);
+  configInput.value = '';
+});
+
+function applyConfig(config) {
+  for (const key in config) {
+    if (key in params) params[key] = config[key];
+  }
+  // Sync uniforms
+  uniforms.uRadius.value = params.radius;
+  uniforms.uScaleBoost.value = params.scaleBoost;
+  uniforms.uDim.value = params.dimAmount;
+  const bgc = new THREE.Color(params.bgColor);
+  renderer.setClearColor(bgc);
+  uniforms.uBgColor.value.copy(bgc);
+  uniforms.uCrossArm.value.set(params.crossThickness, params.crossBarWidth, params.crossBarPos);
+  uniforms.uStarParams.value.set(params.starPoints, params.starInnerRatio);
+  uniforms.uMediaThreshold.value = params.imageThreshold;
+  uniforms.uMediaContrast.value = params.imageContrast;
+  uniforms.uMediaBrightness.value = params.imageBrightness;
+  uniforms.uMediaSoftness.value = params.imageSoftness;
+  uniforms.uMediaInvert.value = params.imageInvert ? 1 : 0;
+  buildParticlePresetTexture(params.particlePreset);
+  textSettingsFolder.show(params.particlePreset === 'Text');
+  spiralSettingsFolder.show(params.particlePreset === 'Spiral');
+  if (colorSchemes[params.colorScheme]) palette = colorSchemes[params.colorScheme];
+  applyGradientPreset(params.gradientPreset);
+  uniforms.uRippleStrength.value = params.rippleStrength;
+  uniforms.uRippleSpeed.value = params.rippleSpeed;
+  uniforms.uRippleDecay.value = params.rippleDecay;
+  uniforms.uRippleWidth.value = params.rippleWidth;
+  uniforms.uFlowSpeed.value.set(params.flowSpeedX, params.flowSpeedY);
+  uniforms.uPulseAmp.value = params.pulseAmplitude;
+  uniforms.uPulseFreq.value = params.pulseFrequency;
+  uniforms.uWaveAmp.value = params.waveAmplitude;
+  uniforms.uWaveFreq.value = params.waveFrequency;
+  if (!params.mouseEnabled) uniforms.uMouse.value.set(9999, 9999);
+  // Rebuild grid and activate input mode
+  buildGrid();
+  activateInput(params.inputMode);
+  // Refresh all GUI controllers
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+}
+
+// --- lil-gui ---
+const gui = new GUI({ title: 'MALAI' }).close();
+
+// --- Input ---
+const inputFolder = gui.addFolder('Input').close();
 inputFolder.add(params, 'inputMode', {
-  Rectangle: 0, Star: 1, Cross: 2, Image: 3, Video: 4, Webcam: 5
+  Rectangle: 0, Star: 1, Cross: 2, Image: 3, Video: 4, Webcam: 5, Text: 6
 }).name('Mode').onChange(v => {
   params.inputMode = Number(v);
   activateInput(params.inputMode);
@@ -651,33 +1170,150 @@ mediaSettingsFolder.add(params, 'imageInvert').name('Invert').onChange(v => {
 });
 mediaSettingsFolder.show(false);
 
-const gridFolder = gui.addFolder('Grid');
-gridFolder.add(params, 'cols', 10, 600, 1).name('Columns').onFinishChange(buildGrid);
-gridFolder.add(params, 'rows', 10, 600, 1).name('Rows').onFinishChange(buildGrid);
-gridFolder.add(params, 'cellSize', 0.1, 0.5, 0.01).name('Cell Size').onFinishChange(buildGrid);
-gridFolder.add(params, 'gap', 0.0, 0.15, 0.005).name('Gap').onFinishChange(buildGrid);
+const textMaskFolder = inputFolder.addFolder('Text Mask');
+textMaskFolder.add(params, 'textMaskString').name('Text').onFinishChange(v => {
+  if (params.inputMode === 6 && v.length > 0) {
+    const tex = buildTextMaskTexture(v);
+    setMediaTexture(tex);
+  }
+});
+textMaskFolder.show(false);
 
-const fxFolder = gui.addFolder('Mouse Interaction');
-fxFolder.add(params, 'mouseEnabled').name('Enabled').onChange(v => {
-  if (!v) uniforms.uMouse.value.set(9999, 9999);
+// --- Layout / Grid ---
+const layoutFolder = gui.addFolder('Layout').close();
+layoutFolder.add(params, 'cols', 10, 600, 1).name('Columns').onFinishChange(buildGrid);
+layoutFolder.add(params, 'rows', 10, 600, 1).name('Rows').onFinishChange(buildGrid);
+layoutFolder.add(params, 'cellSize', 0.1, 0.5, 0.01).name('Cell Size').onFinishChange(buildGrid);
+layoutFolder.add(params, 'gap', 0.0, 0.15, 0.005).name('Gap').onFinishChange(buildGrid);
+layoutFolder.add(params, 'particlePreset', particlePresetNames).name('Particle Shape').onChange(v => {
+  buildParticlePresetTexture(v);
+  textSettingsFolder.show(v === 'Text');
+  spiralSettingsFolder.show(v === 'Spiral');
+  buildGrid();
 });
-fxFolder.add(params, 'radius', 0.5, 10, 0.1).name('Radius').onChange(v => {
-  uniforms.uRadius.value = v;
+const spiralSettingsFolder = layoutFolder.addFolder('Spiral Settings');
+spiralSettingsFolder.add(params, 'spiralSpeed', -10, 10, 0.1).name('Rotation Speed').onChange(v => {
+  uniforms.uParticleRotation.value = v;
 });
-fxFolder.add(params, 'scaleBoost', 0.0, 4.0, 0.1).name('Scale Boost').onChange(v => {
-  uniforms.uScaleBoost.value = v;
+spiralSettingsFolder.show(params.particlePreset === 'Spiral');
+const textSettingsFolder = layoutFolder.addFolder('Text Settings');
+textSettingsFolder.add(params, 'textLayout', { Random: 0, Sequential: 1 }).name('Text Layout').onChange(v => {
+  params.textLayout = Number(v);
+  buildGrid();
+});
+textSettingsFolder.add(params, 'textString').name('Characters').onFinishChange(buildGrid);
+textSettingsFolder.show(params.particlePreset === 'Text');
+
+// --- Animation ---
+const animFolder = gui.addFolder('Animation').close();
+animFolder.add(params, 'animSpeed', -10.0, 10.0, 0.1).name('Speed');
+const flowFolder = animFolder.addFolder('Flow');
+flowFolder.add(params, 'flowSpeedX', -1.0, 1.0, 0.01).name('Drift X').onChange(v => {
+  uniforms.uFlowSpeed.value.x = v;
+});
+flowFolder.add(params, 'flowSpeedY', -1.0, 1.0, 0.01).name('Drift Y').onChange(v => {
+  uniforms.uFlowSpeed.value.y = v;
+});
+const pulseFolder = animFolder.addFolder('Pulse');
+pulseFolder.add(params, 'pulseAmplitude', 0.0, 0.5, 0.01).name('Amplitude').onChange(v => {
+  uniforms.uPulseAmp.value = v;
+});
+pulseFolder.add(params, 'pulseFrequency', 0.0, 5.0, 0.1).name('Frequency').onChange(v => {
+  uniforms.uPulseFreq.value = v;
+});
+pulseFolder.add(params, 'waveAmplitude', 0.0, 0.5, 0.01).name('Wave Amp').onChange(v => {
+  uniforms.uWaveAmp.value = v;
+});
+pulseFolder.add(params, 'waveFrequency', 0.0, 5.0, 0.1).name('Wave Freq').onChange(v => {
+  uniforms.uWaveFreq.value = v;
 });
 
-const styleFolder = gui.addFolder('Style');
-styleFolder.addColor(params, 'bgColor').name('Background').onChange(v => {
+// --- Gradient Presets (20) ---
+const gradientPresets = {
+  Monochrome: ['#ffffff', '#888888', '#222222'],
+  Sunset: ['#ff512f', '#f09819', '#ff5e62'],
+  'Blue Flame': ['#0000ff', '#00aaff', '#00ffff'],
+  'Purple Haze': ['#7b2ff7', '#c471ed', '#f64f59'],
+  'Green Neon': ['#00ff87', '#60efff', '#00ff87'],
+  'Golden Hour': ['#f7971e', '#ffd200', '#f7971e'],
+  'Cherry Blossom': ['#ffc3a0', '#ffafbd', '#ffc3a0'],
+  'Deep Ocean': ['#000428', '#004e92', '#000428'],
+  'Fire Ice': ['#ff0000', '#ffffff', '#0000ff'],
+  'Midnight': ['#0f0c29', '#302b63', '#24243e'],
+  'Emerald': ['#11998e', '#38ef7d', '#11998e'],
+  'Blood Moon': ['#360033', '#8b0000', '#ff4444'],
+  'Cotton Candy': ['#ee9ca7', '#ffdde1', '#c3cfe2'],
+  'Electric': ['#fc00ff', '#00dbde', '#fc00ff'],
+  'Sahara': ['#c2b280', '#deb887', '#d2691e'],
+  'Northern Lights': ['#43cea2', '#185a9d', '#43cea2'],
+  'Magma': ['#ff0844', '#ffb199', '#ff0844'],
+  'Frost': ['#e0eafc', '#cfdef3', '#c9d6ff'],
+  'Toxic': ['#a8ff78', '#78ffd6', '#a8ff78'],
+  'Copper': ['#b79891', '#94716b', '#b79891'],
+};
+
+function applyGradientPreset(name) {
+  const colors = gradientPresets[name];
+  if (!colors) return;
+  uniforms.uGradColorA.value.set(colors[0]);
+  uniforms.uGradColorB.value.set(colors[1]);
+  uniforms.uGradColorC.value.set(colors[2]);
+}
+// Initialize gradient colors from default preset
+applyGradientPreset(params.gradientPreset);
+
+// --- Colors ---
+const colorsFolder = gui.addFolder('Colors').close();
+colorsFolder.add(params, 'colorScheme', Object.keys(colorSchemes)).name('Color Scheme').onChange(v => {
+  params.colorScheme = v;
+  palette = colorSchemes[v];
+  buildGrid();
+});
+colorsFolder.addColor(params, 'bgColor').name('Background').onChange(v => {
   const c = new THREE.Color(v);
   renderer.setClearColor(c);
   uniforms.uBgColor.value.copy(c);
 });
-styleFolder.add(params, 'dimAmount', 0.0, 1.0, 0.05).name('Dim Amount').onChange(v => {
+colorsFolder.add(params, 'dimAmount', 0.0, 1.0, 0.05).name('Dim Amount').onChange(v => {
   uniforms.uDim.value = v;
 });
-styleFolder.add(params, 'animSpeed', -10.0, 10.0, 0.1).name('Anim Speed');
+
+const gradientFolder = colorsFolder.addFolder('Gradient');
+gradientFolder.add(params, 'gradientPreset', Object.keys(gradientPresets)).name('Preset').onChange(v => {
+  params.gradientPreset = v;
+  applyGradientPreset(v);
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+});
+gradientFolder.add(params, 'gradientEnabled').name('Enabled').onChange(v => {
+  uniforms.uGradientEnabled.value = v ? 1 : 0;
+});
+
+// --- Interaction ---
+const interactionFolder = gui.addFolder('Interaction').close();
+interactionFolder.add(params, 'mouseEnabled').name('Mouse Enabled').onChange(v => {
+  if (!v) uniforms.uMouse.value.set(9999, 9999);
+});
+interactionFolder.add(params, 'radius', 0.5, 10, 0.1).name('Radius').onChange(v => {
+  uniforms.uRadius.value = v;
+});
+interactionFolder.add(params, 'scaleBoost', 0.0, 4.0, 0.1).name('Scale Boost').onChange(v => {
+  uniforms.uScaleBoost.value = v;
+});
+
+const rippleFolder = interactionFolder.addFolder('Ripple');
+rippleFolder.add(params, 'rippleEnabled').name('Enabled');
+rippleFolder.add(params, 'rippleStrength', 0.1, 5.0, 0.1).name('Strength').onChange(v => {
+  uniforms.uRippleStrength.value = v;
+});
+rippleFolder.add(params, 'rippleSpeed', 1.0, 15.0, 0.5).name('Speed').onChange(v => {
+  uniforms.uRippleSpeed.value = v;
+});
+rippleFolder.add(params, 'rippleDecay', 0.5, 8.0, 0.1).name('Decay').onChange(v => {
+  uniforms.uRippleDecay.value = v;
+});
+rippleFolder.add(params, 'rippleWidth', 0.3, 5.0, 0.1).name('Width').onChange(v => {
+  uniforms.uRippleWidth.value = v;
+});
 
 // --- Pointer → World ---
 function screenToWorld(clientX, clientY) {
@@ -697,6 +1333,34 @@ canvas.addEventListener('pointerleave', () => {
 });
 
 canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+
+// --- Config (bottom of GUI) ---
+const configFolder = gui.addFolder('Config').close();
+configFolder.add({ fn: () => {
+  const cfg = { ...defaultConfig };
+  // Preserve input, text, and particle preset settings
+  delete cfg.inputMode;
+  delete cfg.textMaskString;
+  delete cfg.textParticles;
+  delete cfg.textString;
+  delete cfg.textLayout;
+  delete cfg.particlePreset;
+  applyConfig(cfg);
+}}, 'fn').name('↩ Back to Default');
+configFolder.add({ fn: randomizeParams }, 'fn').name('🎲 Randomize');
+configFolder.add({ fn: exportConfig }, 'fn').name('Export Config');
+configFolder.add({ fn: importConfig }, 'fn').name('Import Config');
+
+// --- Ripple system ---
+let rippleIndex = 0;
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (!params.rippleEnabled) return;
+  const pos = screenToWorld(e.clientX, e.clientY);
+  const slot = uniforms.uRipples.value[rippleIndex % 5];
+  slot.set(pos.x, pos.y, accumulatedTime, 1.0);
+  rippleIndex++;
+});
 
 // --- Render Loop ---
 const timer = new Timer();

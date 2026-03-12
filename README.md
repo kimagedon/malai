@@ -6,14 +6,6 @@
 
 Interactive generative art on the GPU. Animated grid of geometric shapes rendered via Three.js instanced mesh and custom GLSL shaders.
 
-## Features
-
-- **Grid masks** — rectangle, latin cross, star
-- **Media masks** — image, video, or webcam
-- **Mouse interaction** — cells react to cursor proximity
-- **Infinite scroll** — seamless diagonal drift
-- **Real-time GUI** — tweak everything on the fly
-
 ## Requirements
 
 - Node.js 18+
@@ -25,6 +17,8 @@ Interactive generative art on the GPU. Animated grid of geometric shapes rendere
 npm install
 npm run dev
 ```
+
+Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 ## Tech
 
